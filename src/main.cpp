@@ -24,6 +24,12 @@
 #include "WaterMeter.h"
 //#include "config.h"
 
+#define LED_BUILTIN 2
+
+// Neustart alle 12 Stunden
+unsigned long restartTime = 43200000; // 12 Stunden in Millisekunden
+unsigned long previousMillis = 0; // Startzeit für den Timer
+
 CREDENTIAL currentWifi; // global to store found wifi
 
 uint8_t wifiConnectCounter = 0; // count retries
@@ -275,24 +281,29 @@ ControlStateType ControlState = StateInit;
 
 void loop()
 {
+  // Täglicher Neustart nach 12 Stunden
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= restartTime) {
+      Serial.println("Täglicher Neustart...");
+      ESP.restart();  // Neustart des ESP8266
+  }
+
+  // Zustandsgesteuerte Logik (ControlState)
   switch (ControlState)
   {
     case StateInit:
-      //Serial.println("StateInit:");
+      // Initialisierungslogik
       WiFi.mode(WIFI_STA);
-
       ControlState = StateNotConnected;
       break;
 
     case StateNotConnected:
-      //Serial.println("StateNotConnected:");
-
+      // Wenn keine WLAN-Verbindung besteht
       ControlState = StateWifiConnect;
       break;
       
     case StateWifiConnect:
-      //Serial.println("StateWifiConnect:");
-      // station mode
+      // Versuche, eine WLAN-Verbindung herzustellen
       if (ConnectWifi() == false)
       {
         ControlState = StateOperatingNoWifi;
@@ -309,16 +320,15 @@ void loop()
         Serial.print("IP address: ");
         Serial.println(WiFi.localIP());
 
-        setupOTA();
-        
-        if (strlen(currentWifi.mqtt_broker)) // MQTT is used
+        setupOTA();  // OTA Setup nach erfolgreicher Verbindung
+
+        if (strlen(currentWifi.mqtt_broker)) // MQTT wird verwendet
         {
           mqttEnabled = true;
           ControlState = StateMqttConnect;
         }
         else
         {
-          // no MQTT server -> go operating
           mqttEnabled = false;
           ControlState = StateOperating;
           Serial.println(F("MQTT not enabled"));
@@ -327,29 +337,20 @@ void loop()
       }
       else
       {
-        Serial.println("");
         Serial.println("Connection failed.");
-
-        // try again
         ControlState = StateNotConnected;
-
-        // reboot 
         ESP.restart();
       }
       break;
 
     case StateMqttConnect:
-      Serial.println("StateMqttConnect:");
-      digitalWrite(LED_BUILTIN, HIGH); // off
-
-      waterMeter.enableMqtt(false);
-
+      // Versuche, die MQTT-Verbindung herzustellen
       if (WiFi.status() != WL_CONNECTED)
       {
         ControlState = StateNotConnected;
-        break; // exit (hopefully) switch statement
+        break;
       }
-      
+
       if (mqttEnabled)
       {
         if (mqttConnect())
@@ -360,82 +361,99 @@ void loop()
         else
         {
           Serial.println("MQTT connect failed");
-
           delay(1000);
-          // try again
         }
       }
       else
       {
-        // no MQTT is used at all
         ControlState = StateConnected;
       }
       ArduinoOTA.handle();
-      
       break;
 
     case StateConnected:
-      Serial.println("StateConnected:");
-
-      if (mqttEnabled)
+      // Prüfe, ob MQTT und WLAN noch verbunden sind
+      if (mqttEnabled && !mqttClient.connected())
       {
-        if (!mqttClient.connected())
-        {
-          ControlState = StateMqttConnect;
-          delay(1000);
-        }
-        else
-        {
-          // subscribe to given topics
-          mqttSubscribe();
-          
-          ControlState = StateOperating;
-          digitalWrite(LED_BUILTIN, LOW); // on
-          Serial.println("StateOperating:");
-          //mqttDebug("up and running");
-        }
+        ControlState = StateMqttConnect;
+        delay(1000);
+      }
+      else if (WiFi.status() != WL_CONNECTED)
+      {
+        ControlState = StateWifiConnect;
       }
       else
       {
+        mqttSubscribe();  // Abonniere MQTT-Themen nach erfolgreicher Verbindung
         ControlState = StateOperating;
+        digitalWrite(LED_BUILTIN, LOW); // On
+        Serial.println("StateOperating:");
       }
       ArduinoOTA.handle();
-      
       break;
     
     case StateOperating:
-      //Serial.println("StateOperating:");
-
+      // Normaler Betriebszustand
       if (WiFi.status() != WL_CONNECTED)
       {
         ControlState = StateWifiConnect;
-        break; // exit (hopefully switch statement)
+        break;
       }
 
-      if (mqttEnabled)
+      if (mqttEnabled && !mqttClient.connected())
       {
-        if (!mqttClient.connected())
-        {
-          Serial.println("not connected to MQTT server");
-          ControlState = StateMqttConnect;
-        }
-
-        mqttClient.loop();
+        Serial.println("MQTT-Verbindung verloren, versuche neu zu verbinden...");
+        ControlState = StateMqttConnect;
       }
 
-      // here we go
-      waterMeter.loop();
-
-      ArduinoOTA.handle();
-
+      mqttClient.loop();  // MQTT-Client aktiv halten
+      waterMeter.loop();  // Hauptlogik des Wasserzählers
+      ArduinoOTA.handle(); // OTA Updates checken
       break;
 
     case StateOperatingNoWifi:
-
+      // Betriebsmodus ohne WLAN
       waterMeter.loop();
       break;
 
     default:
-      Serial.println("Error: invalid ControlState");  
+      Serial.println("Error: invalid ControlState");
   }
+}
+
+void reconnectWifi() {
+    WiFi.disconnect();  // Trenne vorhandene Verbindungen
+    delay(1000);  // kurze Verzögerung
+    WiFi.begin(currentWifi.ssid, currentWifi.password);  // Stelle erneut Verbindung her
+    
+    // Warte bis die Verbindung hergestellt wurde
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) { // 20 Versuche
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WLAN-Verbindung wiederhergestellt.");
+        setupOTA();  // Stelle sicher, dass OTA nach dem Reconnect funktioniert
+    } else {
+        Serial.println("WLAN-Reconnect fehlgeschlagen.");
+    }
+}
+
+void reconnectMqtt() {
+    // Warte, bis die WLAN-Verbindung besteht, bevor du versuchst, MQTT wiederherzustellen
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Versuche MQTT-Verbindung wiederherzustellen...");
+        
+        if (mqttConnect()) {
+            mqttSubscribe();  // Neu abonnieren der Topics
+            Serial.println("MQTT-Verbindung wiederhergestellt.");
+        } else {
+            Serial.println("MQTT-Reconnect fehlgeschlagen, versuche es später erneut.");
+        }
+    } else {
+        Serial.println("WLAN nicht verbunden, MQTT kann nicht wiederhergestellt werden.");
+    }
 }
