@@ -96,7 +96,7 @@ is published in **watermeter/0/total** and so on.
 | MOSI   | D7      | 23    |
 | MISO   | D6      | 19    |
 | SCK    | D5      | 18    |
-| GDO0   | D2      | 32    |
+| GDO0   | D2      | 4     |
 | GDO2   | not connected| not connected|
 </div>
 
