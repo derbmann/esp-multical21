@@ -52,16 +52,16 @@ std::vector<CREDENTIAL> const credentials = {
 // Attach CC1101 pins to ESP32 SPI pins
 // VCC   => 3V3
 // GND   => GND
-// CSN   => 4
+// CSN   => 5
 // MOSI  => 23
 // MISO  => 19
 // SCK   => 18
-// GD0   => 32  any valid interrupt pin for your platform will do
+// GD0   => 4  any valid interrupt pin for your platform will do
 // GD2   => not connected 
 
 // attach CC1101 pins to ESP32 SPI pins
 
-  #define CC1101_GDO0          32
+  #define CC1101_GDO0          4
   #define PIN_LED_BUILTIN      2
 #endif
 #endif // __CONFIG_H__
